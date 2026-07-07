@@ -52,9 +52,31 @@ vqmoe/
 
 ## Dependencies (referenced, not vendored)
 
-- **[OneCompression](https://github.com/mmzz164/OneCompression)** — VQ MoE quantizer + vLLM dequant kernels.
-- **vLLM** with the sm_120 patches (base: [jasl/vllm](https://github.com/jasl/vllm)) — see `vllm-sm120/`.
-- Native libs `deep_gemm`, `flashmla` (build artifacts) are **not** vendored here.
+- **[OneCompression](https://github.com/mmzz164/OneCompression)** @ tag `glm-serving-v1` — VQ MoE
+  quantizer + vLLM dequant kernels.
+- **vLLM** with the sm_120 patch stack (base: [jasl/vllm](https://github.com/jasl/vllm)) — see `vllm-sm120/`.
+- Native libs `deep_gemm`, `flashmla` (compiled `.so`, build artifacts) — **not** vendored here.
+
+Pinned environment (the deployment): `python 3.10`, `torch 2.11.0`, `transformers 5.12.0`
+(GLM-5.2 needs ≥5.12), `triton 3.6.0`, `vllm 20260622.dev0+g72261a7af` (the precompiled sm_120 fork).
+
+## Reproducibility status (honest)
+
+This v1 is a **faithful record of the serving layer**, not yet a turn-key clone. What's covered vs
+what's still needed for "anyone can run it the same way":
+
+| Piece | Status |
+|---|---|
+| Serving glue (launcher, API server, safety nets, chat template) | ✅ in this repo |
+| VQ dequant kernels | ✅ public (OneCompression @ `glm-serving-v1`) |
+| sm_120 sparse gather fallback | ✅ patch here, but on top of ↓ |
+| **sm_120 vLLM base (patch stack + compiled native libs)** | ❌ **not yet published** — the hard gap |
+| Quantized checkpoint | ⏳ HF upload pending |
+| Pinned env / build recipe | ⏳ versions listed above; no one-shot installer yet |
+
+The load-bearing gap is the **sm_120 vLLM fork** (a substantial, hand-patched + hand-compiled
+stack). Making this repo truly reproducible means publishing that fork at a pinned commit with
+native-lib build instructions — tracked as the next step, not done here.
 
 ## License
 

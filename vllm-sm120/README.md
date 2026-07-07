@@ -20,11 +20,20 @@ Result on GLM-5.2 (sm_120, 2× RTX PRO 6000): **maxlen 16384 (4×)**, prefill ~1
 
 ## How to apply
 
-Base commit (jasl/vllm production snapshot): **`d4e0151c71` (prod-base-20260702)**.
+> **Honest status — the base is NOT clean upstream.** This 44-line patch is the *last* layer of a
+> larger, not-yet-published sm_120 enablement stack. The production base `prod-base-20260702`
+> (`d4e0151c71`) carries additional local sm_120 patches (marlin / mla_attention / auto_gptq /
+> deepseek_v2 kernels + scheduler/cudagraph audits) on top of [jasl/vllm](https://github.com/jasl/vllm),
+> and the deployment uses a **precompiled** build of it (`vllm 20260622.dev0+g72261a7af`) plus
+> compiled native libraries (`deep_gemm`, `flashmla` `.so`). Applying just this patch to a stock
+> vLLM will **not** reproduce the deployment. Publishing the full sm_120 fork (pinned commit +
+> native-lib build instructions) is a tracked follow-up — see the repo root "Reproducibility status".
+
+Once you have the patched + built sm_120 vLLM checkout:
 
 ```bash
-cd <your vllm checkout>            # jasl/vllm at/near d4e0151c71
-git apply /path/to/vqmoe/vllm-sm120/flashmla_sparse.patch
+cd <sm120 vllm checkout>           # jasl/vllm + the prod-base sm120 stack
+git apply /path/to/vqmoe/vllm-sm120/flashmla_sparse.patch   # if not already included
 ```
 
 Touches only `vllm/v1/attention/backends/mla/flashmla_sparse.py`.
