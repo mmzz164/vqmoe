@@ -1,0 +1,62 @@
+diff --git a/vllm/v1/attention/backends/mla/flashmla_sparse.py b/vllm/v1/attention/backends/mla/flashmla_sparse.py
+index 0315550718..d7bea745d0 100644
+--- a/vllm/v1/attention/backends/mla/flashmla_sparse.py
++++ b/vllm/v1/attention/backends/mla/flashmla_sparse.py
+@@ -50,6 +50,40 @@ if TYPE_CHECKING:
+ 
+ logger = init_logger(__name__)
+ 
++# --- GLM-5.2 sparse-on-sm120 gather fallback (2026-07-02, env-gated, default OFF) -------------
++# The FlashMLA CUDA extension ships NO sm120 kernels (strings audit: sm90/sm100 only), and the
++# in-tree Triton sparse suite is hard-shaped for DeepSeek-V4 geometry (448+64=512), not GLM's
++# 576 (512 lora + 64 rope). This fallback implements the exact DSA sparse-MLA semantics with a
++# gather + plain attention: score over the full 576 dims, value-accumulate over the first 512.
++# Correctness-first (torch ops, fp32 softmax); per-forward T is small on this deployment
++# (max_num_batched_tokens=8) so the gathered (T, topk, 576) tensor is ~18MB — memory-safe.
++# Enable with GLM_SPARSE_GATHER=1. Default OFF -> the file behaves exactly as before.
++import os as _os
++
++_GLM_SPARSE_GATHER = _os.environ.get("GLM_SPARSE_GATHER") == "1"
++
++
++def _gather_sparse_mla_bf16(
++    q: torch.Tensor,             # (T, H, 576) bf16
++    kv_flat: torch.Tensor,       # (S, 576) bf16 (paged cache viewed flat; global slots index it)
++    topk_indices: torch.Tensor,  # (T, K) int, global slot ids (entries beyond length are invalid)
++    topk_length: torch.Tensor,   # (T,) valid counts per token
++    scale: float,
++    v_dim: int = 512,
++) -> torch.Tensor:
++    T, H, D = q.shape
++    K = topk_indices.shape[1]
++    idx = topk_indices.to(torch.long).clamp_(min=0)
++    kv = kv_flat[idx.reshape(-1)].reshape(T, K, D).float()           # (T, K, 576)
++    s = torch.einsum("thd,tkd->thk", q.float(), kv) * scale          # (T, H, K) fp32
++    invalid = torch.arange(K, device=q.device)[None, :] >= topk_length[:, None]
++    s.masked_fill_(invalid[:, None, :], float("-inf"))
++    p = torch.softmax(s, dim=-1)
++    p = torch.nan_to_num(p)  # fully-masked rows (possible in profiling dummy runs) -> zeros, not NaN
++    out = torch.einsum("thk,tkd->thd", p, kv[..., :v_dim])           # (T, H, 512) fp32
++    return out.to(q.dtype)
++# ----------------------------------------------------------------------------------------------
++
+ # For FP8 sparse attention we have two implementations:
+ # 1. Mixed batch mode: use the FP8 decode kernel for both prefill and decode this is
+ #    done by treating all tokens as single batch.
+@@ -627,6 +661,16 @@ class FlashMLASparseImpl(SparseMLAAttentionImpl[FlashMLASparseMetadata]):
+             return_valid_counts=True,
+         )
+ 
++        if _GLM_SPARSE_GATHER:
++            # sm120: no FlashMLA CUDA kernel exists -> exact gather fallback (see header note)
++            return _gather_sparse_mla_bf16(
++                q,
++                kv_c_and_k_pe_cache.view(-1, kv_c_and_k_pe_cache.shape[-1]),
++                topk_indices,
++                topk_length,
++                self.softmax_scale,
++            )
++
+         return self._bf16_flash_mla_kernel(
+             q,
+             kv_c_and_k_pe_cache,

@@ -1,0 +1,9 @@
+# build artifacts / native libs (referenced, never vendored)
+pylibs/
+*.so
+*.pyc
+__pycache__/
+# checkpoints / large data never live in the code repo
+*.safetensors
+*.pt
+*.bin
