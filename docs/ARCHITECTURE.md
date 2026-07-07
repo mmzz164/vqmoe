@@ -43,8 +43,8 @@ upside. `core/` is extracted when model #2 arrives and the real shared surface i
 
 ## Before publishing (checklist)
 
-- [ ] Add a top-level `LICENSE` (intended Apache-2.0) and a `NOTICE` crediting OneCompression (MIT),
-      GLM-5.2 (Apache-2.0), vLLM (Apache-2.0), jasl/vllm.
+- [ ] Add a top-level `LICENSE` (MIT or Apache-2.0) and a `NOTICE` crediting OneCompression (MIT,
+      Fujitsu + mmzz164), GLM-5.2 (MIT, zai-org), vLLM (Apache-2.0), jasl/vllm.
 - [ ] Fill the HF checkpoint URL in `README.md` / `MODEL_CARD.md` once the model is uploaded.
 - [ ] Sanity-scan for machine-local absolute paths — the launcher's defaults point at `/var/hf/...`
       but every one is an overridable env var (documented in `model_spec.sh`); decide whether to

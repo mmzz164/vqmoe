@@ -47,6 +47,10 @@ Launch: `bash start_glm_api_sparse.sh` (after setting `GLM_CKPT`; see `model_spe
 
 ## Provenance & license
 
-- Base model: GLM-5.2 (Apache-2.0). Quantizer: [OneCompression](https://github.com/mmzz164/OneCompression) (MIT).
-- This build's serving config is in `vqmoe` (intended Apache-2.0).
-- The 1.4 TB BF16 original was released after this build; re-quantization requires re-downloading it.
+- Base model: [GLM-5.2](https://huggingface.co/zai-org/GLM-5.2) (**MIT**, zai-org). This is a
+  quantized derivative (`base_model_relation: quantized`) — MIT permits redistribution.
+- Quantizer: [OneCompression](https://github.com/mmzz164/OneCompression) (**MIT**, Fujitsu Ltd. +
+  VQ extensions © mmzz164).
+- Serving config (this repo, `vqmoe`): permissive (MIT/Apache-2.0, see repo root).
+- The 1.4 TB BF16 original was deleted locally after this build; re-quantization requires
+  re-downloading it from HF.

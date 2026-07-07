@@ -58,6 +58,7 @@ vqmoe/
 
 ## License
 
-Intended: **Apache-2.0** (matches the vLLM / GLM / Qwen ecosystem). The serving glue here is
-original; it references OneCompression (MIT) and vLLM (Apache-2.0). A `LICENSE` file is added on
-first publication — see the "before publishing" checklist in `docs/ARCHITECTURE.md`.
+The serving glue here is original and permissive (MIT or Apache-2.0 — TBD, added as a `LICENSE`
+file on first publication). Everything it builds on is permissive too:
+GLM-5.2 (**MIT**, zai-org), OneCompression (**MIT**, Fujitsu + mmzz164), vLLM (**Apache-2.0**).
+See the "before publishing" checklist in `docs/ARCHITECTURE.md`.
