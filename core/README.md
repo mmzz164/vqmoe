@@ -8,15 +8,18 @@ of the per-model adapters:
 - the sampling safety nets (`lz_penalty_logitproc.py` — LZ-penalty repetition defense +
   budget-forcing for clean `</think>` termination).
 
-**It is intentionally empty in v1.** The GLM-5.2 adapter (`models/glm-5.2/`) currently carries
-working, byte-identical copies of these files. We defer the extraction on purpose:
+**It is intentionally empty — and now, after model #2, deliberately so.** The plan was to extract
+a shared core once a second model arrived and the real overlap was known. Model #2
+(`models/minimax-m3/`) has landed, and the finding is: **the concrete overlap is thin.**
 
-- These scripts are **live production code**. Splitting "generic core" from "GLM glue" now, with
-  only one model in the repo, would be a refactor-in-the-dark that risks the working launcher for
-  no immediate benefit.
-- The right time to extract the core is **when model #2 arrives** — the real shared surface is
-  whatever GLM and model #2 have in common, which we'll know then instead of guessing now.
+- GLM-5.2 serves on a **patched** vLLM (out-of-tree model + the `vllm-sm120/` sparse gather
+  fallback); MiniMax-M3 serves on **official** vLLM's native model. Different substrate → different
+  engine setup, different loader, different server entrypoint.
+- What they genuinely share — the VQ dequant kernels, the OpenAI API *shape*, the low-bit sampling
+  concerns — already lives in OneCompression and vLLM, not in glue we'd hoist here.
 
-Until then: to add a model, copy `models/glm-5.2/` to `models/<name>/` and swap the adapter bits
-(chat template, `model_spec.sh`, attention/KV knobs, model card). The first time you do that,
-lift the common files up into `core/` and have both adapters import them.
+So a "generic core" module would be indirection over two adapters that have little literal code in
+common. Each adapter stays self-contained. To add a model, copy the *closest* existing adapter
+(`models/glm-5.2/` for DSA/patched-vLLM models, `models/minimax-m3/` for natively-supported ones)
+and swap the adapter bits (chat template, `model_spec.sh`, attention/KV knobs, key translation,
+model card). Revisit extraction only if a third model makes a real shared surface obvious.

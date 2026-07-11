@@ -1,86 +1,99 @@
 # vqmoe — serve sub-2-bit VQ-quantized giant MoE models on consumer GPUs
 
 `vqmoe` is a **serving toolkit** for very large Mixture-of-Experts LLMs that have been
-quantized to **sub-2-bit** with vector quantization (VQ / AQLM-style), running on a small
-number of **consumer Blackwell (sm_120, e.g. RTX PRO 6000)** GPUs.
+quantized to **~2 bits/weight and below** with vector quantization (VQ / AQLM-style), running on a
+small number of **consumer Blackwell (sm_120, e.g. RTX PRO 6000)** GPUs.
 
 It is the *deployment* half of the story. The *quantization* half — the VQ mixed-bit
-quantizer, the AutoBit/loss-aware bit allocation, and the vLLM GPTQ/VQ dequant kernels — lives in
+quantizer, the loss-aware bit allocation, and the vLLM GPTQ/VQ dequant kernels — lives in
 [OneCompression](https://github.com/mmzz164/OneCompression). `vqmoe` takes those quantized
-checkpoints and makes them **serve well**: sparse long context on hardware that has no sparse
-kernel, an OpenAI-compatible API, and the sampling safety nets that keep low-bit reasoning models
-from running away.
+checkpoints and makes them **serve well**: long context on hardware with no off-the-shelf path, an
+OpenAI-compatible API, and the sampling considerations that keep low-bit reasoning models usable.
 
 ## Why it exists
 
 Off-the-shelf stacks can't run these models here:
 
 - **llama.cpp / GGUF** have no VQ MoE kernel → a 744B model at 1.9 bits/weight simply won't load.
-- **Stock vLLM** on sm_120 has **no FlashMLA sparse kernel**, so native sparse-attention models
-  (DeepSeek-V3.2 / GLM-5.2-style DSA) are capped at short context by dense O(n²) workspace.
+- **Stock vLLM** on sm_120 has **no FlashMLA sparse kernel**, so DSA-style native sparse-attention
+  models (DeepSeek-V3.2 / GLM-5.2) are capped at short context by dense O(n²) workspace — until you
+  add the gather fallback in `vllm-sm120/`.
 
-`vqmoe` closes both gaps with a small, additive layer on top of vLLM + OneCompression.
+`vqmoe` closes these gaps with a small, additive layer on top of vLLM + OneCompression.
 
-## What's model-agnostic vs model-specific
+## Models
 
-| Shared (the framework) | Per-model (a thin adapter under `models/`) |
-|---|---|
-| sm_120 sparse-attention enablement (`vllm-sm120/`) | bitmap / quantization config (in OneCompression + the HF checkpoint) |
-| OpenAI-compatible API server + launcher pattern | chat template |
-| no-think default, LZ-penalty + budget-forcing safety nets | attention geometry, KV / gpu-util tuning |
-| | model card |
+| # | model | bpw | size | serving substrate |
+|---|---|---|---|---|
+| 1 | [GLM-5.2](models/glm-5.2/) (744B) | 1.90 | 172 GiB | **patched** vLLM + `vllm-sm120/` sparse gather (DSA has no sm_120 kernel) |
+| 2 | [MiniMax-M3](models/minimax-m3/) (427B) | 2.40 | 130 GiB | **official** vLLM 0.23.1 native M3 (MSA indexer runs on stock kernels — no patch) |
 
-**Model #1 is GLM-5.2** (`models/glm-5.2/`). Adding a model = dropping in a new adapter; the
-shared serving core is factored out of the GLM adapter once model #2 lands (see `core/README.md`).
+The two differ in what they need from vLLM, and that difference is the interesting part: GLM-5.2's
+DSA sparse attention has no sm_120 kernel and needs the hand-written gather fallback here; MiniMax-M3's
+MSA lightning indexer is supported natively by upstream vLLM, so its adapter is pure key-translation
++ quant dispatch on top of the stock wheel. Adding a model = dropping a new adapter under `models/`.
 
 ## Layout
 
 ```
 vqmoe/
-├── vllm-sm120/       # sparse-attention-on-sm120 enablement (shared): the gather-fallback patch
-├── core/             # model-agnostic serving core (extracted when model #2 arrives)
+├── vllm-sm120/       # sparse-attention-on-sm120 gather fallback (used by GLM, NOT by M3)
+├── core/             # model-agnostic serving core (still deferred — see below)
 ├── models/
-│   └── glm-5.2/      # model #1: launcher + server + chat template + MODEL_CARD
+│   ├── glm-5.2/      # model #1: patched-vLLM launcher + server + chat template + MODEL_CARD
+│   └── minimax-m3/   # model #2: official-vLLM VQ server + key-translation adapter + MODEL_CARD
 └── docs/ARCHITECTURE.md
 ```
 
-## Quick start (GLM-5.2)
+`core/` stays intentionally empty: now that model #2 has landed, the concrete overlap between the two
+adapters turns out to be **thin** — they sit on different vLLM substrates (patched vs official) with
+different loaders and servers. What they truly share (the VQ dequant kernels, the OpenAI API shape,
+the low-bit sampling concerns) is small and already lives in OneCompression + vLLM, so forcing a
+shared "core" module would be more indirection than reuse. See `core/README.md`.
 
-1. Get the quantized checkpoint (HF: TBD) and the [OneCompression](https://github.com/mmzz164/OneCompression) VQ kernels.
-2. Apply the sm_120 sparse patch to a compatible vLLM checkout — see [`vllm-sm120/README.md`](vllm-sm120/README.md).
-3. Serve — see [`models/glm-5.2/`](models/glm-5.2/) (`start_glm_api_sparse.sh`, `MODEL_CARD.md`).
+## Quick start
+
+Pick the adapter for your model and follow its README:
+
+- **GLM-5.2** — [`models/glm-5.2/`](models/glm-5.2/): needs the `vllm-sm120/` sparse patch, then
+  `start_glm_api_sparse.sh`. Checkpoint: [aquaman164/GLM-5.2-VQ-1.9bit](https://huggingface.co/aquaman164/GLM-5.2-VQ-1.9bit).
+- **MiniMax-M3** — [`models/minimax-m3/`](models/minimax-m3/): stock official vLLM 0.23.1 + the
+  adapter; no patch. Checkpoint: [aquaman164/MiniMax-M3-VQ-2.4bit](https://huggingface.co/aquaman164/MiniMax-M3-VQ-2.4bit).
+
+Both need the [OneCompression](https://github.com/mmzz164/OneCompression) VQ dequant kernels + shared
+codebooks on `PYTHONPATH`.
 
 ## Dependencies (referenced, not vendored)
 
-- **[OneCompression](https://github.com/mmzz164/OneCompression)** @ tag `glm-serving-v1` — VQ MoE
-  quantizer + vLLM dequant kernels.
-- **vLLM** with the sm_120 patch stack (base: [jasl/vllm](https://github.com/jasl/vllm)) — see `vllm-sm120/`.
-- Native libs `deep_gemm`, `flashmla` (compiled `.so`, build artifacts) — **not** vendored here.
-
-Pinned environment (the deployment): `python 3.10`, `torch 2.11.0`, `transformers 5.12.0`
-(GLM-5.2 needs ≥5.12), `triton 3.6.0`, `vllm 20260622.dev0+g72261a7af` (the precompiled sm_120 fork).
+- **[OneCompression](https://github.com/mmzz164/OneCompression)** — VQ MoE quantizer + vLLM dequant
+  kernels + the shared codebooks. (GLM serving pinned at tag `glm-serving-v1`.)
+- **vLLM**:
+  - GLM-5.2 → the sm_120 **patch stack** (base: [jasl/vllm](https://github.com/jasl/vllm)) + compiled
+    native libs `deep_gemm`, `flashmla` — see `vllm-sm120/`. **Not vendored** (the hard gap below).
+  - MiniMax-M3 → **official** vLLM 0.23.1 nightly (native MiniMax-M3). No fork.
+- `transformers 5.12.0` (both models need ≥5.12), `torch 2.11.0`.
 
 ## Reproducibility status (honest)
 
-This v1 is a **faithful record of the serving layer**, not yet a turn-key clone. What's covered vs
-what's still needed for "anyone can run it the same way":
+A faithful record of the serving layer. What's covered vs still needed, **per model**:
 
-| Piece | Status |
-|---|---|
-| Serving glue (launcher, API server, safety nets, chat template) | ✅ in this repo |
-| VQ dequant kernels | ✅ public (OneCompression @ `glm-serving-v1`) |
-| sm_120 sparse gather fallback | ✅ patch here, but on top of ↓ |
-| **sm_120 vLLM base (patch stack + compiled native libs)** | ❌ **not yet published** — the hard gap |
-| Quantized checkpoint | ⏳ HF upload pending |
-| Pinned env / build recipe | ⏳ versions listed above; no one-shot installer yet |
+| Piece | GLM-5.2 | MiniMax-M3 |
+|---|---|---|
+| Adapter (server, launcher/loader, safety nets) | ✅ in this repo | ✅ in this repo |
+| VQ dequant kernels + codebooks | ✅ OneCompression | ✅ OneCompression |
+| Quantized checkpoint | ✅ [HF](https://huggingface.co/aquaman164/GLM-5.2-VQ-1.9bit) | ✅ [HF](https://huggingface.co/aquaman164/MiniMax-M3-VQ-2.4bit) |
+| Base vLLM | ❌ **sm_120 fork not yet published** — the hard gap | ✅ **official** 0.23.1 nightly, no patch |
+| Machine-local paths / one-shot installer | ⚠ overridable env defaults; no lockfile | ⚠ four paths to edit; no lockfile |
 
-The load-bearing gap is the **sm_120 vLLM fork** (a substantial, hand-patched + hand-compiled
-stack). Making this repo truly reproducible means publishing that fork at a pinned commit with
-native-lib build instructions — tracked as the next step, not done here.
+The load-bearing gap is **GLM's sm_120 vLLM fork** (a substantial hand-patched + hand-compiled stack);
+publishing it at a pinned commit with build instructions is the next step. **MiniMax-M3 has no such
+gap** — official vLLM + OneCompression + the adapter here is the whole stack.
 
 ## License
 
-The serving glue here is original and permissive (MIT or Apache-2.0 — TBD, added as a `LICENSE`
-file on first publication). Everything it builds on is permissive too:
-GLM-5.2 (**MIT**, zai-org), OneCompression (**MIT**, Fujitsu + mmzz164), vLLM (**Apache-2.0**).
-See the "before publishing" checklist in `docs/ARCHITECTURE.md`.
+Serving glue here is **MIT** (see `LICENSE` / `NOTICE`). What it builds on:
+- GLM-5.2 — **MIT** (zai-org).
+- MiniMax-M3 — **MiniMax Community License** (non-MIT; commercial use requires "Built with MiniMax M3"
+  attribution and, above a revenue threshold, prior authorization). The M3 checkpoint carries the
+  license; read it before commercial deployment.
+- OneCompression — **MIT** (Fujitsu Ltd. + mmzz164). vLLM — **Apache-2.0**.

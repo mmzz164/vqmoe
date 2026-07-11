@@ -6,9 +6,16 @@ This project is a serving toolkit and builds on the following components. It doe
 not vendor their source; it references them. Their licenses and notices apply to
 their respective code.
 
-- GLM-5.2 (base model) — MIT License, Copyright (c) zai-org.
+- GLM-5.2 (base model, model #1) — MIT License, Copyright (c) zai-org.
   https://huggingface.co/zai-org/GLM-5.2
   The quantized checkpoint served here is a derivative work (base_model_relation: quantized).
+
+- MiniMax-M3 (base model, model #2) — MiniMax Community License, Copyright (c) 2026 MiniMax.
+  https://huggingface.co/MiniMaxAI/MiniMax-M3
+  The quantized checkpoint served here is a derivative work (base_model_relation: quantized) and
+  inherits the MiniMax Community License. NOTE: that license is NOT MIT — commercial use requires
+  displaying "Built with MiniMax M3" and, above its revenue threshold, prior authorization from
+  MiniMax. This repository ships only serving glue (MIT); the model weights carry the base license.
 
 - OneCompression (VQ MoE quantizer + vLLM dequant kernels) — MIT License,
   Copyright 2025-2026 Fujitsu Ltd.; VQ per-expert extensions Copyright (c) 2026 mmzz164.

@@ -41,12 +41,21 @@ repo, factoring a "generic core" out of live production code would be a guess wi
 upside. `core/` is extracted when model #2 arrives and the real shared surface is known. See
 `core/README.md`.
 
+## Note on M3 (model #2): the middle layer is optional
+
+The three-layer diagram above assumes the model needs `vqmoe/vllm-sm120` to run sparse attention on
+sm_120. That is true for **GLM-5.2** (DSA has no sm_120 sparse kernel). It is **not** true for
+**MiniMax-M3**: upstream vLLM 0.23.1 ships native MiniMax-M3 with the MSA lightning indexer, which
+runs on the stock `TRITON_ATTN` backend on sm_120. So for M3 the middle "make it run on cheap GPUs"
+layer collapses to "use official vLLM", and its adapter (`models/minimax-m3/`) is pure
+key-translation + quant dispatch on top of the stock wheel. The "quantize" and "serve well" layers
+are unchanged. Which middle layer you need is a per-model property, not a framework constant.
+
 ## Before publishing (checklist)
 
-- [ ] Add a top-level `LICENSE` (MIT or Apache-2.0) and a `NOTICE` crediting OneCompression (MIT,
-      Fujitsu + mmzz164), GLM-5.2 (MIT, zai-org), vLLM (Apache-2.0), jasl/vllm.
-- [ ] Fill the HF checkpoint URL in `README.md` / `MODEL_CARD.md` once the model is uploaded.
-- [ ] Sanity-scan for machine-local absolute paths — the launcher's defaults point at `/var/hf/...`
-      but every one is an overridable env var (documented in `model_spec.sh`); decide whether to
-      keep them as example defaults or blank them.
-- [ ] Confirm public vs private with the owner.
+- [x] Add a top-level `LICENSE` (MIT) and a `NOTICE` crediting OneCompression (MIT, Fujitsu + mmzz164),
+      GLM-5.2 (MIT, zai-org), MiniMax-M3 (MiniMax Community License), vLLM (Apache-2.0), jasl/vllm.
+- [x] Fill the HF checkpoint URLs in `README.md` / per-model `MODEL_CARD.md` (GLM + M3 uploaded).
+- [x] Machine-local absolute paths: kept as example defaults; GLM's are overridable env vars, M3's
+      are listed under `models/minimax-m3/README.md` "Paths you must edit".
+- [x] Public vs private: public (owner-confirmed).
