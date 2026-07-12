@@ -37,5 +37,21 @@ def _vq_load(model_path, *args, **kw):
 
 S.load = _vq_load
 
+# A client that drops mid-stream (Claude Code Esc, curl timeout, proxy restart)
+# makes the generation loop's socket writes raise BrokenPipe, which has been
+# observed to take the whole server down. Contain it: stop that generation only.
+_orig_handle_completion = S.APIHandler.handle_completion
+
+
+def _safe_handle_completion(self, request, stop_words):
+    try:
+        _orig_handle_completion(self, request, stop_words)
+    except (BrokenPipeError, ConnectionResetError) as e:
+        import logging
+        logging.warning(f"client disconnected mid-generation ({e!r}); request dropped")
+
+
+S.APIHandler.handle_completion = _safe_handle_completion
+
 if __name__ == "__main__":
     S.main()

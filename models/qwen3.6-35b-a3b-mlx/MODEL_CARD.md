@@ -98,6 +98,13 @@ published quality numbers are the served model's numbers.
 - With mixed subvector widths in one layer stack (d=4 and d=8 tiers), every kernel-dispatch
   guard must key on the *module's* `d` — a d=8 pair silently entering the d=4 fused kernel
   reads misaligned codebook entries and produces garbage, not an error.
+- Claude Code (Agent SDK) injects extra `system`-role messages *inside* `messages[]`; Qwen chat
+  templates `raise_exception` unless the single system message is first. `vq_proxy.py` folds
+  non-leading system messages into user turns. (The upstream error surfaces in Claude Code as a
+  misleading "model may not exist".)
+- A streaming client that disconnects mid-generation (Claude Code Esc) raises BrokenPipe inside
+  mlx_lm.server's generation write path and can take the whole server down — `vq_serve.py` wraps
+  `handle_completion` to drop that request and keep serving.
 - vLLM workers rename themselves `VLLM::Worker…` — `pkill -f` by script name misses them.
 - `mx.view(int32 → uint32)` before shifts: MLX right-shift is arithmetic on signed dtypes.
 - safetensors `framework="numpy"` cannot read bf16; route through torch or pre-dump f32.

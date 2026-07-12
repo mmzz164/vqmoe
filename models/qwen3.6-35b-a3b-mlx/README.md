@@ -23,7 +23,8 @@ reaches a size scalar can't usefully occupy at all. Decode ~66 tok/s (2.6bpw) / 
 |---|---|
 | `vq_switch.py` | `VQSwitchLinear` (packed-code unpack + codebook decode), fused `VQSwitchGLU`, `load_vq_model()` |
 | `vq_kernel.py` | Metal kernels: simdgroup-per-row VQ GEMV + fused gate·up·SiLU, d=4 (`vq_gemv2`/`vq_swiglu`) and d=8 (`*_d8`) variants |
-| `vq_serve.py` | OpenAI-compatible server (mlx_lm.server with the VQ loader patched in) |
+| `vq_serve.py` | OpenAI-compatible server (mlx_lm.server with the VQ loader patched in; survives client disconnects mid-stream) |
+| `vq_proxy.py` | Anthropic Messages ⇄ OpenAI proxy — lets **Claude Code** use the VQ server as its backend (streaming, tools, system-message folding) |
 | `vq_generate.py` | one-shot generation smoke test |
 | `vq_test.py` | Metal smoke + golden check vs CUDA reference + kernel-vs-reference + micro-bench |
 | `vq_ktest.py` | synthetic all-tier kernel test (no artifact needed): correctness vs reference + bench |
