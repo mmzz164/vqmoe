@@ -23,8 +23,11 @@ Env:
 Notes:
     * mlx_lm.server rejects non-text content parts in a list, so every message
       is flattened to a plain string; images become a short placeholder.
-    * Anthropic `thinking` blocks and OpenAI `reasoning` deltas are dropped;
-      only the visible answer text and tool calls are forwarded.
+    * Upstream `reasoning` stream deltas are forwarded as Anthropic `thinking`
+      blocks (set VQ_PROXY_THINKING=0 to drop them instead). Thinking blocks in
+      *incoming* requests are always dropped (Qwen re-thinks each turn).
+    * Non-leading system-role messages (Claude Code injects them mid-conversation)
+      are folded into user turns — Qwen chat templates only allow system first.
 """
 import argparse
 import json
@@ -311,16 +314,31 @@ def openai_to_anthropic_response(oai, model_name):
     }
 
 
+FORWARD_THINKING = os.environ.get("VQ_PROXY_THINKING", "1") != "0"
+
+
 async def anthropic_stream(oai_body, model_name, est_input):
     """Consume the upstream OpenAI SSE stream, yield Anthropic SSE events."""
     msg_id = _new_id("msg")
-    open_kind = None      # "text" | "tool" | None
+    open_kind = None      # "think" | "text" | "tool" | None
     open_index = None
     next_index = 0
     text_index = None
+    think_index = None
     tool_map = {}         # openai tool_call index -> anthropic block index
     output_tokens = 0
     finish = None
+
+    def _close_block():
+        """Events to close the currently open block (thinking needs a signature)."""
+        evs = []
+        if open_kind == "think":
+            evs.append(_sse("content_block_delta", {
+                "type": "content_block_delta", "index": open_index,
+                "delta": {"type": "signature_delta", "signature": ""},
+            }))
+        evs.append(_sse("content_block_stop", {"type": "content_block_stop", "index": open_index}))
+        return evs
 
     client = app.state.client
     async with client.stream("POST", f"{UPSTREAM_URL}/v1/chat/completions", json=oai_body) as resp:
@@ -367,11 +385,31 @@ async def anthropic_stream(oai_body, model_name, est_input):
             choice = choices[0]
             delta = choice.get("delta") or {}
 
+            reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+            if reasoning and FORWARD_THINKING:
+                if open_kind != "think":
+                    if open_kind is not None:
+                        for ev in _close_block():
+                            yield ev
+                    if think_index is None:
+                        think_index = next_index
+                        next_index += 1
+                    open_kind, open_index = "think", think_index
+                    yield _sse("content_block_start", {
+                        "type": "content_block_start", "index": open_index,
+                        "content_block": {"type": "thinking", "thinking": ""},
+                    })
+                yield _sse("content_block_delta", {
+                    "type": "content_block_delta", "index": open_index,
+                    "delta": {"type": "thinking_delta", "thinking": reasoning},
+                })
+
             content = delta.get("content")
             if content:
                 if open_kind != "text":
                     if open_kind is not None:
-                        yield _sse("content_block_stop", {"type": "content_block_stop", "index": open_index})
+                        for ev in _close_block():
+                            yield ev
                     if text_index is None:
                         text_index = next_index
                         next_index += 1
@@ -390,7 +428,8 @@ async def anthropic_stream(oai_body, model_name, est_input):
                 fn = tc.get("function") or {}
                 if oai_idx not in tool_map:
                     if open_kind is not None:
-                        yield _sse("content_block_stop", {"type": "content_block_stop", "index": open_index})
+                        for ev in _close_block():
+                            yield ev
                     aidx = next_index
                     next_index += 1
                     tool_map[oai_idx] = aidx
@@ -408,7 +447,8 @@ async def anthropic_stream(oai_body, model_name, est_input):
                     aidx = tool_map[oai_idx]
                     if open_kind != "tool" or open_index != aidx:
                         if open_kind is not None:
-                            yield _sse("content_block_stop", {"type": "content_block_stop", "index": open_index})
+                            for ev in _close_block():
+                                yield ev
                         open_kind, open_index = "tool", aidx
                 args = fn.get("arguments")
                 if args:
@@ -422,7 +462,8 @@ async def anthropic_stream(oai_body, model_name, est_input):
                 finish = fr
 
     if open_kind is not None:
-        yield _sse("content_block_stop", {"type": "content_block_stop", "index": open_index})
+        for ev in _close_block():
+            yield ev
     yield _sse("message_delta", {
         "type": "message_delta",
         "delta": {"stop_reason": _map_stop_reason(finish, bool(tool_map)), "stop_sequence": None},
