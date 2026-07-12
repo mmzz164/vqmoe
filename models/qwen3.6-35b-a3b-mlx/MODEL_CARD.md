@@ -105,6 +105,26 @@ published quality numbers are the served model's numbers.
 - A streaming client that disconnects mid-generation (Claude Code Esc) raises BrokenPipe inside
   mlx_lm.server's generation write path and can take the whole server down — `vq_serve.py` wraps
   `handle_completion` to drop that request and keep serving.
+- **Stock mlx-lm sanitize treats any `mtp.*` key as "raw HF checkpoint"** and +1-shifts every
+  backbone norm — shipping MTP weights inside an already-converted artifact poisons a stock-path
+  load into multilingual garbage. The loader strips mtp keys before sanitize when MTP is off.
+- Qwen3.6's MTP norm weights straddle the mean≈0.5 boundary (pre_fc norms land at 0.27/0.49
+  post-shift), so magnitude heuristics for raw-vs-shifted detection misfire in both directions;
+  we ship final +1-shifted values and shield them from sanitize instead.
+
+## MTP self-speculative decoding (opt-in)
+
+The 2.4bpw artifact ships the checkpoint's MTP head (0.845B params quantized to ~0.5 GB:
+experts 4bit gs64 in switch_mlp form, attention/shared 8bit, fc/router/norms fp16). With
+[oMLX](https://github.com/jundot/omlx)'s mlx-lm PR#990 patches importable, `VQ_MTP=1` enables
+the draft/verify cycle (2-token verify with `n_confirmed=1` + one MTP forward per cycle).
+
+Measured (M-series 48 GB, 300-token generations): accept 82% (greedy) / 87% (temp 1),
+tokens/cycle 1.83-1.87 — but a top-8 MoE pays ~2x expert bytes on the 2-token verify
+(21.0ms vs 13.6ms single-step), so the net is **+8% at temperature 0** (bit-identical
+outputs vs non-MTP, verified) and **-17% at temperature 1** (sampled path adds per-cycle
+softmax/sampling). Off by default; useful for greedy workloads only. This is the honest
+MoE-at-batch-1 speculative-decoding economics — dense models are where MTP shines.
 - vLLM workers rename themselves `VLLM::Worker…` — `pkill -f` by script name misses them.
 - `mx.view(int32 → uint32)` before shifts: MLX right-shift is arithmetic on signed dtypes.
 - safetensors `framework="numpy"` cannot read bf16; route through torch or pre-dump f32.

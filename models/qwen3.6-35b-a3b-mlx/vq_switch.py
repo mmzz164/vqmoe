@@ -162,12 +162,56 @@ class VQSwitchGLU(nn.Module):
         return y.squeeze(-2)
 
 
+def _setup_mtp(path, config):
+    """Enable oMLX's mlx-lm PR#990 MTP patches when this artifact ships MTP weights.
+
+    Must run BEFORE the arch module's classes are instantiated. Returns True when
+    the patched TextModel.__init__ will attach the MTP head (weights must then be
+    present — strict load enforces it). config.json's mtp_num_hidden_layers alone
+    is NOT enough: base Qwen3.6 configs carry it even in artifacts without the
+    mtp tensors, so gate on the weight index too.
+    """
+    tc = config.get("text_config", config)
+    n_mtp = int(tc.get("mtp_num_hidden_layers", 0) or 0)
+    # Default OFF: on this MoE, MTP measures +8% at temperature 0 but -17% at
+    # temperature 1 (Claude Code's operating point) — 2-token verify touches
+    # ~2x expert bytes and the sampled path adds per-cycle softmax/sample cost.
+    want = os.environ.get("VQ_MTP", "0") == "1" and n_mtp > 0
+    have = False
+    if want:
+        try:
+            with open(os.path.join(path, "model.safetensors.index.json")) as f:
+                wm = json.load(f)["weight_map"]
+            have = any(k.startswith("language_model.mtp.") for k in wm)
+        except Exception:
+            have = False
+    try:
+        from omlx.patches.mlx_lm_mtp import apply_mlx_lm_mtp_patch, set_mtp_active
+    except Exception as e:
+        if want and have:
+            print(f"[vq] MTP weights present but oMLX patches unavailable ({e!r}); "
+                  f"loading without MTP", flush=True)
+        return False
+    if want and have and apply_mlx_lm_mtp_patch():
+        set_mtp_active(True)
+        print("[vq] MTP self-speculative decoding enabled", flush=True)
+        return True
+    set_mtp_active(False)
+    return False
+
+
+_MTP_NORM_SUFFIXES = (".input_layernorm.weight", ".post_attention_layernorm.weight",
+                      ".q_norm.weight", ".k_norm.weight", "mtp.norm.weight",
+                      ".pre_fc_norm_hidden.weight", ".pre_fc_norm_embedding.weight")
+
+
 def load_vq_model(path):
     """Build qwen3_5_moe, quantize spine per config, swap switch_mlp -> VQ, load weights."""
     import importlib
 
     with open(os.path.join(path, "config.json")) as f:
         config = json.load(f)
+    mtp_on = _setup_mtp(path, config)
     arch = importlib.import_module(f"mlx_lm.models.{config['model_type']}")
     model = arch.Model(arch.ModelArgs.from_dict(config))
 
@@ -180,6 +224,8 @@ def load_vq_model(path):
             return False                                  # VQ modules: skip nn.quantize
         if p in quant:
             return quant[p]
+        if p.startswith("language_model.mtp"):
+            return False       # mtp fc/router/norms ship fp16; quantized ones are in `quant`
         if not hasattr(m, "to_quantized"):
             return False
         return True
@@ -213,8 +259,23 @@ def load_vq_model(path):
     weights = {}
     for s in shards:
         weights.update(mx.load(s))
+    if not mtp_on:
+        # Stock mlx_lm sanitize treats ANY mtp.* key as "raw HF checkpoint" and
+        # +1-shifts every backbone norm — poison for our already-shifted
+        # artifact. Without the MTP head the weights are dead anyway: drop them
+        # before sanitize can see them.
+        weights = {k: v for k, v in weights.items() if ".mtp." not in "." + k}
     if hasattr(model, "sanitize"):
+        # Our artifacts ship FINAL (MLX-convention, +1-shifted) mtp norm values.
+        # The oMLX-patched sanitize decides raw-vs-shifted per key by magnitude
+        # (mean<0.5 -> +1), which double-shifts Qwen3.6's pre_fc norms (shipped
+        # means 0.27 / 0.49). Shield them: restore shipped values after sanitize.
+        shipped_mtp_norms = {k: v for k, v in weights.items()
+                             if ".mtp." in k or k.startswith("language_model.mtp.")
+                             if k.endswith(_MTP_NORM_SUFFIXES)}
         weights = model.sanitize(weights)
+        if mtp_on:
+            weights.update(shipped_mtp_norms)
     model.load_weights(list(weights.items()), strict=True)
 
     # 4) codebooks
