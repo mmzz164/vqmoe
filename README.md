@@ -1,8 +1,9 @@
 # vqmoe — serve sub-2-bit VQ-quantized giant MoE models on consumer GPUs
 
-`vqmoe` is a **serving toolkit** for very large Mixture-of-Experts LLMs that have been
+`vqmoe` is a **serving toolkit** for Mixture-of-Experts LLMs that have been
 quantized to **~2 bits/weight and below** with vector quantization (VQ / AQLM-style), running on a
-small number of **consumer Blackwell (sm_120, e.g. RTX PRO 6000)** GPUs.
+small number of **consumer Blackwell (sm_120, e.g. RTX PRO 6000)** GPUs — and, since model #3,
+on **Apple Silicon (MLX + custom Metal kernels)**.
 
 It is the *deployment* half of the story. The *quantization* half — the VQ mixed-bit
 quantizer, the loss-aware bit allocation, and the vLLM GPTQ/VQ dequant kernels — lives in
@@ -27,11 +28,14 @@ Off-the-shelf stacks can't run these models here:
 |---|---|---|---|---|
 | 1 | [GLM-5.2](models/glm-5.2/) (744B) | 1.90 | 172 GiB | **patched** vLLM + `vllm-sm120/` sparse gather (DSA has no sm_120 kernel) |
 | 2 | [MiniMax-M3](models/minimax-m3/) (427B) | 2.40 | 130 GiB | **official** vLLM 0.23.1 native M3 (MSA indexer runs on stock kernels — no patch) |
+| 3 | [Qwen3.6-35B-A3B](models/qwen3.6-35b-a3b-mlx/) (35B) | 2.38 (experts) | 11.5 GiB | **MLX on Apple Silicon** — custom `mx.fast.metal_kernel` VQ GEMV (no CUDA at all) |
 
-The two differ in what they need from vLLM, and that difference is the interesting part: GLM-5.2's
+The three differ in serving substrate, and that difference is the interesting part: GLM-5.2's
 DSA sparse attention has no sm_120 kernel and needs the hand-written gather fallback here; MiniMax-M3's
 MSA lightning indexer is supported natively by upstream vLLM, so its adapter is pure key-translation
-+ quant dispatch on top of the stock wheel. Adding a model = dropping a new adapter under `models/`.
++ quant dispatch on top of the stock wheel; Qwen3.6 leaves CUDA entirely — the same VQ math ported to
+MLX with ~150 lines of Metal, putting a 35B MoE at scalar-beating quality on a 16 GB MacBook.
+Adding a model = dropping a new adapter under `models/`.
 
 ## Layout
 
@@ -40,8 +44,9 @@ vqmoe/
 ├── vllm-sm120/       # sparse-attention-on-sm120 gather fallback (used by GLM, NOT by M3)
 ├── core/             # model-agnostic serving core (still deferred — see below)
 ├── models/
-│   ├── glm-5.2/      # model #1: patched-vLLM launcher + server + chat template + MODEL_CARD
-│   └── minimax-m3/   # model #2: official-vLLM VQ server + key-translation adapter + MODEL_CARD
+│   ├── glm-5.2/              # model #1: patched-vLLM launcher + server + chat template + MODEL_CARD
+│   ├── minimax-m3/           # model #2: official-vLLM VQ server + key-translation adapter + MODEL_CARD
+│   └── qwen3.6-35b-a3b-mlx/  # model #3: MLX/Apple Silicon — VQ Metal kernels + loader + server
 └── docs/ARCHITECTURE.md
 ```
 
@@ -59,9 +64,12 @@ Pick the adapter for your model and follow its README:
   `start_glm_api_sparse.sh`. Checkpoint: [aquaman164/GLM-5.2-VQ-1.9bit](https://huggingface.co/aquaman164/GLM-5.2-VQ-1.9bit).
 - **MiniMax-M3** — [`models/minimax-m3/`](models/minimax-m3/): stock official vLLM 0.23.1 + the
   adapter; no patch. Checkpoint: [aquaman164/MiniMax-M3-VQ-2.4bit](https://huggingface.co/aquaman164/MiniMax-M3-VQ-2.4bit).
+- **Qwen3.6-35B-A3B (Mac)** — [`models/qwen3.6-35b-a3b-mlx/`](models/qwen3.6-35b-a3b-mlx/):
+  `pip install mlx mlx-lm`, download, `sh run_mac.sh <model_dir>`. No CUDA, no OneCompression at
+  runtime. Checkpoint: [aquaman164/Qwen3.6-35B-A3B-MLX-VQ-2.6bpw](https://huggingface.co/aquaman164/Qwen3.6-35B-A3B-MLX-VQ-2.6bpw).
 
-Both need the [OneCompression](https://github.com/mmzz164/OneCompression) VQ dequant kernels + shared
-codebooks on `PYTHONPATH`.
+The two vLLM models need the [OneCompression](https://github.com/mmzz164/OneCompression) VQ dequant
+kernels + shared codebooks on `PYTHONPATH`; the MLX model is self-contained (kernels bundled).
 
 ## Dependencies (referenced, not vendored)
 
