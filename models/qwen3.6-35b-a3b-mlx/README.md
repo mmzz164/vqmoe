@@ -38,9 +38,17 @@ hf download aquaman164/Qwen3.6-35B-A3B-MLX-VQ-2.6bpw --local-dir qwen-vq
 sh run_mac.sh qwen-vq 8090        # or: python vq_serve.py --model qwen-vq --port 8090
 ```
 
-Env knobs: `VQ_KERNEL=2|1|0` (simdgroup / simple / pure-MLX reference),
-`VQ_FUSED=1|0` (fused swiglu dispatch). Defaults are the fast path; `0/0` is the
-kernel-free reference used for verification.
+Env knobs:
+
+| var | default | effect |
+|---|---|---|
+| `VQ_KERNEL` | `2` | `2`=simdgroup GEMV, `1`=simple kernel, `0`=pure-MLX reference |
+| `VQ_FUSED` | `1` | fused gate·up·SiLU dispatch |
+| `VQ_PREFILL_N` | `256` | batch size above which prefill uses dequant+`gather_mm` (0 = off; measured 256→438 tok/s prefill with `VQ_PREFILL_STEP=8192`) |
+| `VQ_PREFILL_STEP` | `8192` | server prefill chunk; bigger chunks amortize the per-chunk expert dequant |
+| `VQ_CACHE` | `1` | persist system-segment KV entries to disk — fresh sessions skip re-prefilling the (byte-stable) system+tools prefix |
+| `VQ_CACHE_DIR` / `VQ_CACHE_DISK_GB` | `~/.vq3/prompt_cache` / `8` | persistence location / disk budget |
+| `VQ_MTP` | `0` | self-speculative decoding via the bundled MTP head (+8% at temp 0 only; see MODEL_CARD) |
 
 See [MODEL_CARD.md](MODEL_CARD.md) for the full recipe, artifact format, kernel design
 and measured ablations.

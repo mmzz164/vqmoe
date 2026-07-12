@@ -95,6 +95,48 @@ for label, d, K, nbits, _ in CASES:
     fails += 0 if ok else 1
     print(f"  {label} swiglu: rel={e:.3e} {'OK' if ok else 'FAIL'}")
 
+print("== prefill fast path (dequant+gather_mm) vs level-0, N=512 ==")
+for label, d, K, nbits, _ in CASES:
+    E, R, C = 16, 512, 2048
+    m = build_module(E, R, C, d, K, nbits, seed=99)
+    rng = np.random.default_rng(3)
+    N = 512
+    x = mx.array((rng.standard_normal((N, 1, C)) * 0.3).astype(np.float16))
+    eidx = mx.array(np.sort(rng.integers(0, E, size=(N,))).astype(np.int32))
+    os.environ["VQ_PREFILL_N"] = "256"
+    y_fast = m(x, eidx, sorted_indices=True)
+    mx.eval(y_fast)
+    os.environ["VQ_PREFILL_N"] = "0"
+    y_ref = m(x, eidx, sorted_indices=True)
+    mx.eval(y_ref)
+    e = rel_err(y_ref, y_fast)
+    ok = e < 2e-2
+    fails += 0 if ok else 1
+    print(f"  {label} gather_mm: rel={e:.3e} {'OK' if ok else 'FAIL'}")
+
+print("== GLU prefill fast path vs fallback, 64 tok x8 ==")
+for label, d, K, nbits, _ in CASES:
+    mg = build_module(16, 512, 2048, d, K, nbits, seed=11)
+    mu = build_module(16, 512, 2048, d, K, nbits, seed=22)
+    md = build_module(16, 2048, 512, d, K, nbits, seed=33)
+    mu.set_codebook(mg._cb)
+    md.set_codebook(md._cb)                     # own book (down may differ in prod)
+    glu = vq_switch.VQSwitchGLU(mg, mu, md)
+    rng = np.random.default_rng(5)
+    x = mx.array((rng.standard_normal((64, 2048)) * 0.3).astype(np.float16))
+    idx = mx.array(rng.integers(0, 16, size=(64, 8)).astype(np.int32))
+    os.environ["VQ_PREFILL_N"] = "256"
+    y_fast = glu(x, idx)
+    mx.eval(y_fast)
+    os.environ["VQ_PREFILL_N"] = "0"
+    y_ref = glu(x, idx)                          # kernels are None -> level-0 flow
+    mx.eval(y_ref)
+    e = rel_err(y_ref, y_fast)
+    ok = e < 2e-2
+    fails += 0 if ok else 1
+    print(f"  {label} glu_fast: rel={e:.3e} {'OK' if ok else 'FAIL'}")
+os.environ["VQ_PREFILL_N"] = "256"
+
 print("== bench (N=8 tokens, us/dispatch, median of 50) ==")
 for label, d, K, nbits, gemv in CASES:
     for sname, E, R, C in [("gateup", 64, 512, 2048), ("down  ", 64, 2048, 512)]:

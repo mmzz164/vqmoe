@@ -53,5 +53,111 @@ def _safe_handle_completion(self, request, stop_words):
 
 S.APIHandler.handle_completion = _safe_handle_completion
 
+
+# ---- persistent prompt cache: segment-boundary KV entries survive restarts ----
+# mlx_lm.server stores prompt-cache entries at chat segment boundaries (system /
+# user / assistant) in an LRUPromptCache. The system+tools segment is byte-stable
+# across Claude Code sessions, so persisting those entries to disk turns the
+# first ~35k tokens of every fresh session into a cache hit instead of a
+# multi-minute prefill. VQ_CACHE=0 disables; VQ_CACHE_DIR / VQ_CACHE_DISK_GB tune.
+if os.environ.get("VQ_CACHE", "1") != "0":
+    import glob as _glob
+    import hashlib as _hashlib
+    import logging as _logging
+    import queue as _queue
+    import threading as _threading
+
+    from mlx_lm.models.cache import load_prompt_cache, save_prompt_cache
+
+    _CACHE_DIR = os.environ.get("VQ_CACHE_DIR", os.path.expanduser("~/.vq3/prompt_cache"))
+    _CACHE_BYTES = float(os.environ.get("VQ_CACHE_DISK_GB", "8")) * 1e9
+
+    class _PersistentLRUPromptCache(S.LRUPromptCache):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            os.makedirs(_CACHE_DIR, exist_ok=True)
+            self._wq = _queue.Queue()
+            _threading.Thread(target=self._writer, daemon=True).start()
+            self._preload()
+
+        @staticmethod
+        def _fname(model, tokens):
+            h = _hashlib.sha1()
+            h.update(repr(model).encode())
+            h.update(json.dumps(list(tokens)).encode())
+            return h.hexdigest()[:20] + ".safetensors"
+
+        def _preload(self):
+            files = sorted(_glob.glob(os.path.join(_CACHE_DIR, "*.safetensors")),
+                           key=os.path.getmtime, reverse=True)
+            used, n = 0, 0
+            for f in files:
+                sz = os.path.getsize(f)
+                if used + sz > _CACHE_BYTES:
+                    try:
+                        os.remove(f)                      # over budget: oldest go
+                    except OSError:
+                        pass
+                    continue
+                try:
+                    cache, meta = load_prompt_cache(f, return_metadata=True)
+                    model = tuple(json.loads(meta["model_key"]))
+                    tokens = json.loads(meta["tokens"])
+                    super().insert_cache(model, tokens, cache,
+                                         cache_type=meta.get("cache_type", "system"))
+                    used += sz
+                    n += 1
+                except Exception as e:
+                    _logging.warning(f"[vq cache] dropping unreadable "
+                                     f"{os.path.basename(f)}: {e!r}")
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
+            if n:
+                _logging.info(f"[vq cache] preloaded {n} prompt-cache entries "
+                              f"({used/1e9:.2f} GB) from {_CACHE_DIR}")
+
+        def insert_cache(self, model, tokens, prompt_cache, *, cache_type="assistant"):
+            super().insert_cache(model, tokens, prompt_cache, cache_type=cache_type)
+            if cache_type != "system":
+                return    # user/assistant entries embed volatile turn text; churny
+            path = os.path.join(_CACHE_DIR, self._fname(model, tokens))
+            if not os.path.exists(path):
+                # Materialize on THIS thread (which owns the generator's local
+                # stream) — lazy arrays scheduled on a thread-local stream cannot
+                # be evaluated from the writer thread. Stored cache objects are
+                # never mutated after insertion (fetch deepcopies), so handing
+                # references across threads is safe once evaluated.
+                import mlx.core as mx
+                mx.eval([c.state for c in prompt_cache])
+                self._wq.put((path, model, list(tokens), prompt_cache, cache_type))
+
+        def _writer(self):
+            import mlx.core as mx
+            mx.set_default_stream(mx.new_stream(mx.default_device()))
+            while True:
+                path, model, tokens, cache, ctype = self._wq.get()
+                try:
+                    meta = {"model_key": json.dumps([None if x is None else str(x)
+                                                     for x in model]),
+                            "tokens": json.dumps(tokens),
+                            "cache_type": str(ctype)}
+                    save_prompt_cache(path, cache, meta)
+                    _logging.info(f"[vq cache] persisted {ctype} segment "
+                                  f"({len(tokens)} tokens) -> {os.path.basename(path)}")
+                except Exception as e:
+                    _logging.warning(f"[vq cache] persist failed: {e!r}")
+                    try:
+                        os.remove(path)                    # no 0-byte tombstones
+                    except OSError:
+                        pass
+
+    S.LRUPromptCache = _PersistentLRUPromptCache
+
 if __name__ == "__main__":
+    # Bigger prefill steps amortize the fast path's per-chunk expert dequant
+    # (measured 309 -> 438 tok/s at 8192 on the 2.4bpw build).
+    if not any(a.startswith("--prefill-step-size") for a in sys.argv):
+        sys.argv += ["--prefill-step-size", os.environ.get("VQ_PREFILL_STEP", "8192")]
     S.main()

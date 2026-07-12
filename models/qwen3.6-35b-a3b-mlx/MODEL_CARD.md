@@ -112,6 +112,27 @@ published quality numbers are the served model's numbers.
   post-shift), so magnitude heuristics for raw-vs-shifted detection misfire in both directions;
   we ship final +1-shifted values and shield them from sanitize instead.
 
+## Prefill fast path + persistent prompt cache
+
+Decode-oriented GEMV kernels are the wrong shape for prefill: every (token, row)
+pair re-decodes its codebook entries, so a 47k-token Claude Code system prompt took
+~3 minutes (256 tok/s). Two fixes:
+
+1. **Dequant+GEMM prefill** (`VQ_PREFILL_N`): above a batch threshold each expert
+   tensor is dequantized once per chunk and dispatched through `mx.gather_mm`
+   (mlx-lm's own SwitchLinear pattern). The dequant repeats per prefill chunk, so
+   bigger chunks amortize it: 256 → 309 tok/s at the stock 2048-token step,
+   **438 tok/s** at 8192 (now the server default via `VQ_PREFILL_STEP`). Decode is
+   untouched (still the GEMV kernels). Outputs match level-0 to ≤6e-4.
+2. **Persistent prompt cache** (`VQ_CACHE`): mlx-lm's server already snapshots
+   prompt-cache entries at chat *segment* boundaries — including one at the end of
+   the system segment, which is byte-stable across Claude Code sessions.
+   `vq_serve.py` subclasses `LRUPromptCache` to write those system entries to disk
+   (background thread) and preload them at startup, so a fresh server start skips
+   re-prefilling the system prefix entirely. Trap: worker threads need their own
+   MLX stream (`mx.set_default_stream(mx.new_stream(...))`) or every array op
+   raises `There is no Stream(gpu, 0) in current thread`.
+
 ## MTP self-speculative decoding (opt-in)
 
 The 2.4bpw artifact ships the checkpoint's MTP head (0.845B params quantized to ~0.5 GB:

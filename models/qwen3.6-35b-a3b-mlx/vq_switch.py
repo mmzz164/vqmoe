@@ -23,6 +23,14 @@ import mlx.core as mx
 import mlx.nn as nn
 
 
+def _prefill_n():
+    """Batch size (token,expert assignments) above which the dequant+GEMM
+    prefill path replaces the per-row GEMV kernels. 0 disables the fast path
+    (e.g. on 16 GB machines where the ~2 GB dequant transient is unwelcome)."""
+    v = int(os.environ.get("VQ_PREFILL_N", "256"))
+    return v if v > 0 else 1 << 62
+
+
 def _unpack_plan(nbits, nsub):
     """Per-subvector (word, off, need_hi) for LSB-first nbits packing into 32-bit words."""
     words, offs, hi = [], [], []
@@ -98,8 +106,24 @@ class VQSwitchLinear(nn.Module):
         sc = mx.repeat(sc, self._ng // self._d, axis=-1)                # [N, R, nsub]
         return (sub * sc[..., None]).reshape(N, R, self._C)
 
+    def _decode_all(self):
+        """Dequantize the whole tensor -> [E, R, C] float16 (prefill fast path)."""
+        E, R = self.vq_codes.shape[0], self.vq_codes.shape[1]
+        codes = self._unpack(self.vq_codes)                             # [E, R, nsub]
+        sub = mx.take(self._cb, codes.reshape(-1), axis=0)
+        sub = sub.reshape(E, R, codes.shape[-1], self._d)
+        sc = mx.repeat(self._sc16, self._ng // self._d, axis=-1)        # [E, R, nsub]
+        return (sub * sc[..., None]).reshape(E, R, self._C)
+
     def __call__(self, x, indices, sorted_indices=False):
         # x [..., 1, C]; indices [...]; returns [..., 1, R] per index position
+        if indices.size >= _prefill_n() and self._cb is not None:
+            # prefill fast path: the GEMV kernels re-decode codes per (token, row)
+            # pair; for big batches dequantize once and use the tiled GEMM.
+            W = self._decode_all()
+            y = mx.gather_mm(x.astype(W.dtype), mx.swapaxes(W, -1, -2),
+                             rhs_indices=indices, sorted_indices=sorted_indices)
+            return y.astype(x.dtype)
         if getattr(self, "_gemv", None) is not None:
             flat = indices.reshape(-1).astype(mx.int32)
             xk = mx.broadcast_to(x, (*indices.shape, 1, self._C)).reshape(-1, self._C)
@@ -127,6 +151,20 @@ class VQSwitchGLU(nn.Module):
     def __call__(self, x, indices):
         from mlx_lm.models.switch_layers import _gather_sort, _scatter_unsort
         g, u, dn = self.gate_proj, self.up_proj, self.down_proj
+        if indices.size >= _prefill_n() and getattr(g, "_cb", None) is not None:
+            # prefill fast path: dequantize each tensor once, run tiled GEMMs.
+            dtype = x.dtype
+            x = mx.expand_dims(x, (-2, -3))
+            x, idx, inv_order = _gather_sort(x, indices)
+            Wg, Wu = g._decode_all(), u._decode_all()
+            xh = x.astype(Wg.dtype)
+            xg = mx.gather_mm(xh, mx.swapaxes(Wg, -1, -2), rhs_indices=idx, sorted_indices=True)
+            xu = mx.gather_mm(xh, mx.swapaxes(Wu, -1, -2), rhs_indices=idx, sorted_indices=True)
+            inter = mx.sigmoid(xg) * xg * xu
+            Wd = dn._decode_all()
+            y = mx.gather_mm(inter, mx.swapaxes(Wd, -1, -2), rhs_indices=idx, sorted_indices=True)
+            y = _scatter_unsort(y, inv_order, indices.shape)
+            return y.squeeze(-2).astype(dtype)
         vq_swiglu = None
         if getattr(dn, "_gemv", None) is not None and getattr(g, "_cb", None) is not None:
             import vq_kernel
