@@ -1,8 +1,9 @@
 """End-to-end VQ integration test on the Mac: load_vq_model + real generation.
 
 Run:  ~/work/llm/omlx/.venv/bin/python vq_generate.py <artifact_dir> [max_tokens]
-Loads the full qwen3_5_moe model with VQSwitchLinear experts (level-0 pure-MLX
-decode), runs a short Japanese generation, reports text + tok/s.
+Loads the full qwen3_5_moe model with VQSwitchLinear experts (Metal kernels +
+fused swiglu by default; VQ_KERNEL=0 for the pure-MLX reference path), runs a
+short Japanese generation, reports text + tok/s.
 """
 import os
 import sys
@@ -32,7 +33,8 @@ from mlx_lm import generate
 t1 = time.time()
 out = generate(model, tokenizer, prompt=prompt, max_tokens=MAXTOK, verbose=False)
 dt = time.time() - t1
-log(f"generated {MAXTOK} tokens in {dt:.1f}s ({MAXTOK/dt:.2f} tok/s, level-0)")
+mode = f"VQ_KERNEL={os.environ.get('VQ_KERNEL', '2')} VQ_FUSED={os.environ.get('VQ_FUSED', '1')}"
+log(f"generated {MAXTOK} tokens in {dt:.1f}s ({MAXTOK/dt:.2f} tok/s, {mode})")
 print("---- OUTPUT ----")
 print(out)
 print("----------------")

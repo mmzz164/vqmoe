@@ -55,11 +55,13 @@ class VQSwitchLinear(nn.Module):
         self._codes_u32 = mx.view(self.vq_codes, mx.uint32)
         self._sc16 = self.vq_scales.astype(mx.float16)
         kv = os.environ.get("VQ_KERNEL", "2")
-        if kv in ("1", "2") and self._d == 4:
+        self._gemv = None
+        if kv in ("1", "2"):
             import vq_kernel
-            self._gemv = vq_kernel.vq_gemv2 if kv == "2" else vq_kernel.vq_gemv
-        else:
-            self._gemv = None
+            if self._d == 4:
+                self._gemv = vq_kernel.vq_gemv2 if kv == "2" else vq_kernel.vq_gemv
+            elif self._d == 8:
+                self._gemv = vq_kernel.vq_gemv2_d8
 
     @property
     def input_dims(self):
@@ -124,9 +126,13 @@ class VQSwitchGLU(nn.Module):
 
     def __call__(self, x, indices):
         from mlx_lm.models.switch_layers import _gather_sort, _scatter_unsort
-        from vq_kernel import vq_swiglu
         g, u, dn = self.gate_proj, self.up_proj, self.down_proj
-        if getattr(dn, "_gemv", None) is None or getattr(g, "_cb", None) is None:
+        vq_swiglu = None
+        if getattr(dn, "_gemv", None) is not None and getattr(g, "_cb", None) is not None:
+            import vq_kernel
+            # gate/up share one tier (same gate_up tensor); down may differ (own _gemv)
+            vq_swiglu = {4: vq_kernel.vq_swiglu, 8: vq_kernel.vq_swiglu_d8}.get(g._d)
+        if vq_swiglu is None:
             # fallback: reference SwitchGLU flow through the modules (level-0)
             x = mx.expand_dims(x, (-2, -3))
             do_sort = indices.size >= 64
