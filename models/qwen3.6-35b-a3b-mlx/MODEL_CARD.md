@@ -11,8 +11,10 @@ think-ja holdout PPL vs bf16):
 
 | experts avg bpw | scalar GPTQ | **VQ + GPTQ** |
 |---|---|---|
+| ~3.2 (15.4 GB total) | +6.6% | — |
+| **~3.1 (15.0 GB total, uniform 3bit)** | — | **+6.0%** |
 | ~2.6 (12.0 GB total) | +17.5% | — |
-| **~2.4 (11.5 GB total)** | — | **+12.4%** |
+| **~2.4 (11.5 GB total, {2bit:69, 3bit:11})** | — | **+12.4%** |
 | plain-RTN reference @2.6 | +47% | — |
 
 VQ is smaller *and* ~5 pts better than the scalar build — the codebook captures subvector

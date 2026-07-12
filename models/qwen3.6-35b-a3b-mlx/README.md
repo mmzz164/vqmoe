@@ -5,14 +5,15 @@ VQ math as models #1/#2, ported to **MLX on Apple Silicon** with a hand-written
 `mx.fast.metal_kernel` GEMV. Proof that the quantization pipeline is substrate-independent —
 only the last-mile dequant kernel is platform work.
 
-**Artifact**: [aquaman164/Qwen3.6-35B-A3B-MLX-VQ-2.6bpw](https://huggingface.co/aquaman164/Qwen3.6-35B-A3B-MLX-VQ-2.6bpw)
-(11.53 GB, experts avg 2.38 bpw {2bit: 69, 3bit: 11 tensors} + GPTQ-4bit spine, vision bf16).
+**Artifacts** (same adapter serves both):
 
-| metric | value |
-|---|---|
-| quality (think-ja PPL vs bf16) | **+12.4%** — vs +17.5% for same-size scalar GPTQ |
-| decode / prefill (M-series, 48 GB) | **~66 tok/s / ~213 tok/s** |
-| min unified memory | ~16 GB |
+| build | size | think-ja PPL vs bf16 | vs scalar at same size |
+|---|---|---|---|
+| [VQ-2.6bpw](https://huggingface.co/aquaman164/Qwen3.6-35B-A3B-MLX-VQ-2.6bpw) — experts {2bit: 69, 3bit: 11} | 11.53 GB | **+12.4%** | scalar 2.7bpw: +17.5% |
+| [VQ-3.4bpw](https://huggingface.co/aquaman164/Qwen3.6-35B-A3B-MLX-VQ-3.4bpw) — experts uniform 3bit | 15.02 GB | **+6.0%** | scalar 3.5bpw: +6.6% |
+
+VQ dominates scalar at **both** ends of the curve. Decode ~66 tok/s (2.6bpw) / prefill ~213 tok/s
+on an M-series 48 GB; minimum unified memory ~16 GB (2.6bpw) / ~24 GB (3.4bpw).
 
 ## Files
 

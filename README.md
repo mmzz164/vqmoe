@@ -28,7 +28,7 @@ Off-the-shelf stacks can't run these models here:
 |---|---|---|---|---|
 | 1 | [GLM-5.2](models/glm-5.2/) (744B) | 1.90 | 172 GiB | **patched** vLLM + `vllm-sm120/` sparse gather (DSA has no sm_120 kernel) |
 | 2 | [MiniMax-M3](models/minimax-m3/) (427B) | 2.40 | 130 GiB | **official** vLLM 0.23.1 native M3 (MSA indexer runs on stock kernels — no patch) |
-| 3 | [Qwen3.6-35B-A3B](models/qwen3.6-35b-a3b-mlx/) (35B) | 2.38 (experts) | 11.5 GiB | **MLX on Apple Silicon** — custom `mx.fast.metal_kernel` VQ GEMV (no CUDA at all) |
+| 3 | [Qwen3.6-35B-A3B](models/qwen3.6-35b-a3b-mlx/) (35B) | 2.38 / 3.13 (experts) | 11.5 / 15.0 GiB | **MLX on Apple Silicon** — custom `mx.fast.metal_kernel` VQ GEMV (no CUDA at all) |
 
 The three differ in serving substrate, and that difference is the interesting part: GLM-5.2's
 DSA sparse attention has no sm_120 kernel and needs the hand-written gather fallback here; MiniMax-M3's
@@ -66,7 +66,8 @@ Pick the adapter for your model and follow its README:
   adapter; no patch. Checkpoint: [aquaman164/MiniMax-M3-VQ-2.4bit](https://huggingface.co/aquaman164/MiniMax-M3-VQ-2.4bit).
 - **Qwen3.6-35B-A3B (Mac)** — [`models/qwen3.6-35b-a3b-mlx/`](models/qwen3.6-35b-a3b-mlx/):
   `pip install mlx mlx-lm`, download, `sh run_mac.sh <model_dir>`. No CUDA, no OneCompression at
-  runtime. Checkpoint: [aquaman164/Qwen3.6-35B-A3B-MLX-VQ-2.6bpw](https://huggingface.co/aquaman164/Qwen3.6-35B-A3B-MLX-VQ-2.6bpw).
+  runtime. Checkpoints: [VQ-2.6bpw](https://huggingface.co/aquaman164/Qwen3.6-35B-A3B-MLX-VQ-2.6bpw) (11.5 GiB)
+  and [VQ-3.4bpw](https://huggingface.co/aquaman164/Qwen3.6-35B-A3B-MLX-VQ-3.4bpw) (15.0 GiB, beats scalar 3.5bpw on quality).
 
 The two vLLM models need the [OneCompression](https://github.com/mmzz164/OneCompression) VQ dequant
 kernels + shared codebooks on `PYTHONPATH`; the MLX model is self-contained (kernels bundled).
