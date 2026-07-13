@@ -44,8 +44,9 @@ Env knobs:
 |---|---|---|
 | `VQ_KERNEL` | `2` | `2`=simdgroup GEMV, `1`=simple kernel, `0`=pure-MLX reference |
 | `VQ_FUSED` | `1` | fused gate·up·SiLU dispatch |
-| `VQ_PREFILL_N` | `256` | batch size above which prefill uses dequant+`gather_mm` (0 = off; measured 256→438 tok/s prefill with `VQ_PREFILL_STEP=8192`) |
-| `VQ_PREFILL_STEP` | `8192` | server prefill chunk; bigger chunks amortize the per-chunk expert dequant |
+| `VQ_PREFILL_N` | `256` | batch size above which prefill uses dequant+`gather_mm` (0 = off) |
+| `VQ_PREFILL_STEP` | `2048` | server prefill chunk. Bigger amortizes dequant (8192→438 vs 2048→309 tok/s) but the per-chunk fp16 transient scales with it and can OOM the Metal working set; raise only with headroom to spare |
+| `VQ_PREFILL_MIN_HEADROOM_GB` | `16` | fast path falls back to the memory-cheap GEMV kernels when free Metal memory drops below this — prevents a big prompt + grown prompt-cache from OOM-crashing the server |
 | `VQ_CACHE` | `1` | persist system-segment KV entries to disk — fresh sessions skip re-prefilling the (byte-stable) system+tools prefix |
 | `VQ_CACHE_DIR` / `VQ_CACHE_DISK_GB` | `~/.vq3/prompt_cache` / `8` | persistence location / disk budget |
 | `VQ_MTP` | `0` | self-speculative decoding via the bundled MTP head (+8% at temp 0 only; see MODEL_CARD) |

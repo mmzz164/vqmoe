@@ -31,6 +31,29 @@ def _prefill_n():
     return v if v > 0 else 1 << 62
 
 
+# The dequant+GEMM prefill path materializes fp16 expert weights + big-batch
+# activations — a multi-GB transient on top of the model and the (growing)
+# prompt cache. On Apple Silicon that competes with the Metal working-set limit
+# and an overflow is an UNCATCHABLE C++ abort (kIOGPUCommandBufferCallbackError
+# OutOfMemory) that kills the server. So gate the fast path on live headroom:
+# when free Metal memory drops below VQ_PREFILL_MIN_HEADROOM_GB, fall back to the
+# memory-cheap GEMV kernels (slower, but they never materialize fp16 weights).
+_HEADROOM_BYTES = float(os.environ.get("VQ_PREFILL_MIN_HEADROOM_GB", "16")) * 1e9
+
+
+def _prefill_headroom_ok():
+    try:
+        import mlx.core as mx
+        limit = mx.device_info()["max_recommended_working_set_size"]
+        return (limit - mx.get_active_memory()) > _HEADROOM_BYTES
+    except Exception:
+        return True                    # can't measure -> don't block (non-Metal etc.)
+
+
+def _use_prefill(indices):
+    return indices.size >= _prefill_n() and _prefill_headroom_ok()
+
+
 def _unpack_plan(nbits, nsub):
     """Per-subvector (word, off, need_hi) for LSB-first nbits packing into 32-bit words."""
     words, offs, hi = [], [], []
@@ -117,7 +140,7 @@ class VQSwitchLinear(nn.Module):
 
     def __call__(self, x, indices, sorted_indices=False):
         # x [..., 1, C]; indices [...]; returns [..., 1, R] per index position
-        if indices.size >= _prefill_n() and self._cb is not None:
+        if self._cb is not None and _use_prefill(indices):
             # prefill fast path: the GEMV kernels re-decode codes per (token, row)
             # pair; for big batches dequantize once and use the tiled GEMM.
             W = self._decode_all()
@@ -151,7 +174,7 @@ class VQSwitchGLU(nn.Module):
     def __call__(self, x, indices):
         from mlx_lm.models.switch_layers import _gather_sort, _scatter_unsort
         g, u, dn = self.gate_proj, self.up_proj, self.down_proj
-        if indices.size >= _prefill_n() and getattr(g, "_cb", None) is not None:
+        if getattr(g, "_cb", None) is not None and _use_prefill(indices):
             # prefill fast path: dequantize each tensor once, run tiled GEMMs.
             dtype = x.dtype
             x = mx.expand_dims(x, (-2, -3))

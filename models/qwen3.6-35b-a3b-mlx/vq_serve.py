@@ -157,7 +157,12 @@ if os.environ.get("VQ_CACHE", "1") != "0":
 
 if __name__ == "__main__":
     # Bigger prefill steps amortize the fast path's per-chunk expert dequant
-    # (measured 309 -> 438 tok/s at 8192 on the 2.4bpw build).
+    # (309 -> 438 tok/s at 8192 on the 2.4bpw build) BUT the per-chunk transient
+    # scales with the step: 8192 spiked >21 GB and OOM-crashed a 48 GB Mac whose
+    # Metal working-set limit is 40 GB once the prompt cache had grown to ~8 GB.
+    # 2048 (stock mlx_lm default) keeps the transient ~5 GB; the headroom guard in
+    # vq_switch is the backstop. Machines with more RAM can raise both VQ_PREFILL_STEP
+    # and VQ_PREFILL_MIN_HEADROOM_GB together.
     if not any(a.startswith("--prefill-step-size") for a in sys.argv):
-        sys.argv += ["--prefill-step-size", os.environ.get("VQ_PREFILL_STEP", "8192")]
+        sys.argv += ["--prefill-step-size", os.environ.get("VQ_PREFILL_STEP", "2048")]
     S.main()

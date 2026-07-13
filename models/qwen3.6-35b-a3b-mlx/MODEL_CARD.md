@@ -133,6 +133,19 @@ pair re-decodes its codebook entries, so a 47k-token Claude Code system prompt t
    MLX stream (`mx.set_default_stream(mx.new_stream(...))`) or every array op
    raises `There is no Stream(gpu, 0) in current thread`.
 
+**Prefill memory vs the Metal limit.** The dequant+GEMM fast path materializes fp16
+expert weights plus big-batch activations — a multi-GB transient that scales with
+`VQ_PREFILL_STEP`. On a 48 GB Mac (Metal working set ≈ 40 GB) an 8192-step prefill of a
+27k-token prompt spiked >21 GB and, on top of a prompt cache that had grown to ~8 GB,
+overflowed the working set. A Metal command-buffer OOM is an **uncatchable C++ abort**
+(`kIOGPUCommandBufferCallbackErrorOutOfMemory`) — it kills the whole server, not just the
+request, so it must be *prevented*. Two guards: the shipped `VQ_PREFILL_STEP` default is
+`2048` (transient ~5 GB), and `_use_prefill()` checks live headroom
+(`mx.get_active_memory()` vs `max_recommended_working_set_size`) before every fast-path
+dispatch, falling back to the memory-cheap GEMV kernels when free memory drops below
+`VQ_PREFILL_MIN_HEADROOM_GB`. So a big prompt on a loaded machine degrades to slow-but-safe
+instead of crashing.
+
 ## MTP self-speculative decoding (opt-in)
 
 The 2.4bpw artifact ships the checkpoint's MTP head (0.845B params quantized to ~0.5 GB:
