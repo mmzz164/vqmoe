@@ -146,6 +146,16 @@ dispatch, falling back to the memory-cheap GEMV kernels when free memory drops b
 `VQ_PREFILL_MIN_HEADROOM_GB`. So a big prompt on a loaded machine degrades to slow-but-safe
 instead of crashing.
 
+The bigger culprit turned out to be the **prompt cache itself**: mlx-lm's LRU KV cache lives
+in GPU memory and grew to **9.6 GB** across cached conversations. Stacked on the 10.5 GB model
+plus a 49k-token agentic-review prefill (and near-simultaneous requests — `ThreadingHTTPServer`
+runs them concurrently), it overflowed the 40 GB working set even at step 2048. So `vq_serve.py`
+caps the KV cache with `--prompt-cache-bytes` (default `VQ_CACHE_RAM_GB=4`), keeping the resident
+baseline at ~14.5 GB and leaving room for big-context prefill + concurrency. Persisted system
+segments still preload (they fit under the cap). Net: three independent guards — cap the cache,
+cap the step, gate on headroom — because a Metal OOM cannot be caught, only prevented, and this
+workload (big-context code review on a 48 GB Mac) sits right at the memory edge.
+
 ## MTP self-speculative decoding (opt-in)
 
 The 2.4bpw artifact ships the checkpoint's MTP head (0.845B params quantized to ~0.5 GB:

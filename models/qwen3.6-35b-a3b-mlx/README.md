@@ -49,6 +49,7 @@ Env knobs:
 | `VQ_PREFILL_MIN_HEADROOM_GB` | `16` | fast path falls back to the memory-cheap GEMV kernels when free Metal memory drops below this — prevents a big prompt + grown prompt-cache from OOM-crashing the server |
 | `VQ_CACHE` | `1` | persist system-segment KV entries to disk — fresh sessions skip re-prefilling the (byte-stable) system+tools prefix |
 | `VQ_CACHE_DIR` / `VQ_CACHE_DISK_GB` | `~/.vq3/prompt_cache` / `8` | persistence location / disk budget |
+| `VQ_CACHE_RAM_GB` | `4` | cap on the in-RAM (GPU) KV prompt cache. It grew to ~9.6 GB across cached conversations and, on the 10.5 GB model + a big-context prefill, overflowed a 48 GB Mac's Metal working set. Capping keeps the resident baseline low; raise it on machines with more unified memory |
 | `VQ_MTP` | `0` | self-speculative decoding via the bundled MTP head (+8% at temp 0 only; see MODEL_CARD) |
 
 See [MODEL_CARD.md](MODEL_CARD.md) for the full recipe, artifact format, kernel design

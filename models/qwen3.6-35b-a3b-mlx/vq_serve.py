@@ -165,4 +165,13 @@ if __name__ == "__main__":
     # and VQ_PREFILL_MIN_HEADROOM_GB together.
     if not any(a.startswith("--prefill-step-size") for a in sys.argv):
         sys.argv += ["--prefill-step-size", os.environ.get("VQ_PREFILL_STEP", "2048")]
+    # Cap the KV prompt cache. On a 48 GB Mac it grew to 9.6 GB across cached
+    # conversations and, stacked on the 10.5 GB model + a big-context prefill,
+    # overflowed the Metal working set into the uncatchable OOM abort. Capping the
+    # cache keeps the resident baseline low so big prompts have room. Persisted
+    # system segments still preload (they fit under the cap). VQ_CACHE_RAM_GB tunes;
+    # raise it on machines with more unified memory.
+    if not any(a.startswith("--prompt-cache-bytes") for a in sys.argv):
+        ram_gb = float(os.environ.get("VQ_CACHE_RAM_GB", "4"))
+        sys.argv += ["--prompt-cache-bytes", str(int(ram_gb * 1024**3))]
     S.main()
