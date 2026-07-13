@@ -30,6 +30,7 @@ Notes:
       are folded into user turns — Qwen chat templates only allow system first.
 """
 import argparse
+import asyncio
 import json
 import os
 import sys
@@ -66,13 +67,35 @@ if _timeout_env in ("", "0", "none", "None"):
 else:
     _READ_TIMEOUT = float(_timeout_env)
 
+# The single GPU can only do one big prefill at a time without OOMing the Metal
+# working set. mlx_lm.server batches concurrent HTTP requests, so if Claude Code
+# retries/resends (or fires a background request) while a large prefill is in
+# flight, two prefills stack on the GPU. Serialize upstream generations here so
+# vq_serve never sees more than VQ_MAX_CONCURRENCY at once. Raise it only on a
+# machine with unified memory to spare.
+_MAX_CONCURRENCY = max(1, int(os.environ.get("VQ_MAX_CONCURRENCY", "1")))
+
+
 @asynccontextmanager
 async def lifespan(app):
     app.state.client = httpx.AsyncClient(timeout=httpx.Timeout(_READ_TIMEOUT, connect=10.0))
+    app.state.sem = asyncio.Semaphore(_MAX_CONCURRENCY)
     try:
         yield
     finally:
         await app.state.client.aclose()
+
+
+async def _with_sem(gen, sem):
+    """Hold `sem` for the lifetime of async generator `gen`, releasing on normal
+    completion OR on cancellation (client disconnect). This is what frees the slot
+    so a queued retry can proceed instead of stacking a second upstream prefill."""
+    await sem.acquire()
+    try:
+        async for item in gen:
+            yield item
+    finally:
+        sem.release()
 
 
 app = FastAPI(title="vq_proxy", lifespan=lifespan)
@@ -317,7 +340,7 @@ def openai_to_anthropic_response(oai, model_name):
 FORWARD_THINKING = os.environ.get("VQ_PROXY_THINKING", "1") != "0"
 
 
-async def anthropic_stream(oai_body, model_name, est_input):
+async def anthropic_stream(oai_body, model_name, est_input, request=None):
     """Consume the upstream OpenAI SSE stream, yield Anthropic SSE events."""
     msg_id = _new_id("msg")
     open_kind = None      # "think" | "text" | "tool" | None
@@ -364,6 +387,17 @@ async def anthropic_stream(oai_body, model_name, est_input):
         yield _sse("ping", {"type": "ping"})
 
         async for line in resp.aiter_lines():
+            # During a long prefill this generator yields nothing (keepalive lines
+            # below are skipped), so Starlette can't detect a client disconnect on
+            # a send. Poll it explicitly here — mlx_lm emits keepalive lines every
+            # chunk, so this loop keeps ticking — and bail out on disconnect so the
+            # async-with closes the upstream connection and vq_serve aborts the run.
+            if request is not None:
+                try:
+                    if await request.is_disconnected():
+                        break
+                except Exception:
+                    pass
             if not line or not line.startswith("data:"):
                 continue
             payload = line[len("data:"):].strip()
@@ -485,12 +519,13 @@ async def messages(request: Request):
     if stream:
         est_input = max(1, len(json.dumps(oai_body.get("messages", []), ensure_ascii=False)) // 4)
         return StreamingResponse(
-            anthropic_stream(oai_body, model_name, est_input),
+            _with_sem(anthropic_stream(oai_body, model_name, est_input, request), app.state.sem),
             media_type="text/event-stream",
         )
 
     try:
-        resp = await app.state.client.post(f"{UPSTREAM_URL}/v1/chat/completions", json=oai_body)
+        async with app.state.sem:
+            resp = await app.state.client.post(f"{UPSTREAM_URL}/v1/chat/completions", json=oai_body)
     except httpx.HTTPError as exc:
         return JSONResponse(status_code=502, content={
             "type": "error",

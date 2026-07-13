@@ -156,6 +156,16 @@ segments still preload (they fit under the cap). Net: three independent guards �
 cap the step, gate on headroom — because a Metal OOM cannot be caught, only prevented, and this
 workload (big-context code review on a 48 GB Mac) sits right at the memory edge.
 
+Finally, **the concurrency that triggered the stacking** came from mlx_lm.server batching two
+requests for the *same* big prompt — a retry/resend (or background call) landing while the first
+was still prefilling. The Anthropic proxy (`vq_proxy.py`) yields nothing during a prefill (upstream
+keepalive lines are skipped), so Starlette can't observe a client disconnect and never cancels the
+upstream request — a cancelled 49k prefill runs to completion and a retry stacks on top. Fix:
+`vq_proxy` serializes upstream generations behind an `asyncio.Semaphore(VQ_MAX_CONCURRENCY=1)` (a
+retry waits for the slot instead of stacking) and polls `request.is_disconnected()` inside the read
+loop so a hung-up client aborts the upstream run promptly. Serializing is the honest single-GPU
+behavior — one GPU can only do one big prefill well anyway.
+
 ## MTP self-speculative decoding (opt-in)
 
 The 2.4bpw artifact ships the checkpoint's MTP head (0.845B params quantized to ~0.5 GB:

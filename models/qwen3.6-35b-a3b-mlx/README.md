@@ -51,6 +51,7 @@ Env knobs:
 | `VQ_CACHE_DIR` / `VQ_CACHE_DISK_GB` | `~/.vq3/prompt_cache` / `8` | persistence location / disk budget |
 | `VQ_CACHE_RAM_GB` | `4` | cap on the in-RAM (GPU) KV prompt cache. It grew to ~9.6 GB across cached conversations and, on the 10.5 GB model + a big-context prefill, overflowed a 48 GB Mac's Metal working set. Capping keeps the resident baseline low; raise it on machines with more unified memory |
 | `VQ_MTP` | `0` | self-speculative decoding via the bundled MTP head (+8% at temp 0 only; see MODEL_CARD) |
+| `VQ_MAX_CONCURRENCY` | `1` | max concurrent upstream generations the proxy lets through. Single-GPU boxes can't run two big prefills at once without OOM risk, so requests serialize (a retry/background call waits instead of stacking). Raise on machines with spare unified memory |
 
 See [MODEL_CARD.md](MODEL_CARD.md) for the full recipe, artifact format, kernel design
 and measured ablations.
