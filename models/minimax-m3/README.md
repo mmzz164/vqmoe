@@ -70,6 +70,26 @@ curl -s localhost:8004/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"model":"minimax-m3-vq","messages":[{"role":"user","content":"日本の首都は?"}],"max_tokens":30}'
 ```
 
+## Multi-GPU / other architectures
+
+The server is parameterized so the same file runs on different GPU counts and architectures — the
+~130 GiB weights need enough GPUs to hold the TP shards plus KV, so `M3_TP` **must** be tunable.
+Because it rides on **official** vLLM's native MiniMax-M3, nothing here is Blackwell-specific; only
+one default (`M3_EAGER=1`, dodging an sm_120 CUDA-graph capture race) reflects our hardware.
+
+Reference configs:
+
+| hardware | launch env | throughput |
+|---|---|---|
+| 2× RTX PRO 6000 (sm_120, 96 GB) | `M3_TP=2 M3_EAGER=1` (defaults) | ~7 tok/s (eager — CUDA graphs race here) |
+| 8× RTX 3090 (sm_86, 24 GB) | `M3_TP=8 M3_EAGER=0 M3_CUDAGRAPH_WARMUPS=2 M3_MAX_BATCHED_TOKENS=4096` | ~20 tok/s (community-reported) |
+
+Two things the 8×3090 run confirmed: (1) the model runs fine on **Ampere** — no Blackwell dependency;
+(2) **CUDA graphs work off-sm_120** (`M3_EAGER=0` + warmups), for ~2–3× decode. Our eager-only default
+is purely an sm_120 capture-race workaround, not a model limitation. Knobs: `M3_TP`, `M3_PP`,
+`M3_EXPERT_PARALLEL`, `M3_MAX_BATCHED_TOKENS`, `M3_DISABLE_CUSTOM_AR` (see `model_spec.sh`). `block_size`
+stays 128 (mandatory for the MSA sparse cache — a correctness requirement, not a knob).
+
 ## Reproducibility status
 
 Cleaner than the GLM adapter — no hand-compiled sparse fork. What's needed for a same-as-ours run:

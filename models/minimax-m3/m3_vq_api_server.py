@@ -57,6 +57,18 @@ _cgwarm = os.environ.get("M3_CUDAGRAPH_WARMUPS")
 if _cgwarm:
     _comp_cfg["cudagraph_num_of_warmups"] = int(_cgwarm)
 
+# Parallelism / batching are env-configurable so the same server runs on other GPU
+# counts and architectures (validated on 8x RTX 3090 / Ampere at TP=8 — the ~130 GiB
+# weights don't fit 2x 24 GB, so multi-GPU MUST be tunable). Defaults reproduce the
+# 2x RTX PRO 6000 (sm_120) production config, so this is behaviour-preserving there.
+#   M3_TP                 tensor-parallel size (default 2)
+#   M3_PP                 pipeline-parallel size (default 1)
+#   M3_EXPERT_PARALLEL    enable expert parallelism 1/0 (default 1)
+#   M3_MAX_BATCHED_TOKENS max_num_batched_tokens (default 2048)
+#   M3_DISABLE_CUSTOM_AR  disable custom all-reduce 1/0 (default 1; needed on Blackwell
+#                         sm_120, but Ampere w/ NVLink may benefit from 0 — try it)
+# block_size stays 128 (mandatory for the MSA sparse/index cache — a correctness
+# requirement, not a tuning knob).
 _ENGINE_ARGS = AsyncEngineArgs(
     compilation_config=_comp_cfg,
     model=CKPT,
@@ -67,18 +79,18 @@ _ENGINE_ARGS = AsyncEngineArgs(
     quantization="autoround_mixed_vq",
     hf_overrides=_ov,
     trust_remote_code=True,
-    tensor_parallel_size=2,
-    pipeline_parallel_size=1,
-    enable_expert_parallel=True,
+    tensor_parallel_size=int(os.environ.get("M3_TP", "2")),
+    pipeline_parallel_size=int(os.environ.get("M3_PP", "1")),
+    enable_expert_parallel=os.environ.get("M3_EXPERT_PARALLEL", "1") == "1",
     distributed_executor_backend="mp",
     block_size=128,                                  # mandatory for MSA sparse cache
     attention_backend=os.environ.get("M3_ATTN_BACKEND", "TRITON_ATTN"),
     max_model_len=MAXLEN,
-    max_num_batched_tokens=2048,
+    max_num_batched_tokens=int(os.environ.get("M3_MAX_BATCHED_TOKENS", "2048")),
     gpu_memory_utilization=float(os.environ.get("M3_GPU_UTIL", "0.97")),
     max_num_seqs=int(os.environ.get("M3_MAX_SEQS", "4")),
     enforce_eager=os.environ.get("M3_EAGER", "1") == "1",
-    disable_custom_all_reduce=True,                  # Blackwell sm_120
+    disable_custom_all_reduce=os.environ.get("M3_DISABLE_CUSTOM_AR", "1") == "1",
     dtype="bfloat16",
 )
 AsyncEngineArgs.from_cli_args = classmethod(lambda cls, args: _ENGINE_ARGS)
@@ -106,5 +118,7 @@ if __name__ == "__main__":
         "M3_REASONING_PARSER", "minimax_m3")
     validate_parsed_serve_args(args)
     print(f"[m3_vq_api] starting OpenAI server on :{PORT} "
-          f"(model={SERVED}, ckpt={CKPT}, maxlen={MAXLEN})", flush=True)
+          f"(model={SERVED}, ckpt={CKPT}, maxlen={MAXLEN}, "
+          f"TP={_ENGINE_ARGS.tensor_parallel_size} PP={_ENGINE_ARGS.pipeline_parallel_size} "
+          f"eager={_ENGINE_ARGS.enforce_eager})", flush=True)
     asyncio.run(run_server(args))
